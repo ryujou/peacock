@@ -1,8 +1,11 @@
-# peacock
+﻿# peacock
 
 小孔雀3.0，恩师[ずっと徹夜中でいい](https://space.bilibili.com/3546647883680530)
 
-> STM32G0 (STM32G030xx) MCU 项目，基于 STM32CubeMX 生成，使用 CMake 构建，[配置方法](https://blog.csdn.net/liu_yu_143482/article/details/155913195)。
+> STM32G0 (STM32G030xx) MCU 项目，基于 STM32CubeMX 生成，使用 CMake 构建。
+
+使用的是 VSCode 的 STM32CubeIDE 插件，[参考地址](https://blog.csdn.net/liu_yu_143482/article/details/155913195)。
+
 
 ## 目录
 - [项目亮点](#项目亮点)
