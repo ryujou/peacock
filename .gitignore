@@ -1,0 +1,30 @@
+# Build output
+/build/
+/cmake-build-*/
+*.elf
+*.map
+*.bin
+*.hex
+*.list
+
+# CMake
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Toolchain artifacts
+*.o
+*.d
+*.a
+*.su
+
+# IDE / editor
+/.vscode/
+/.settings/
+/.mxproject
+/.idea/
+*.code-workspace
+*.user
+*.swp
