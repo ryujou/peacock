@@ -190,7 +190,7 @@ void FlashCfg_InitDefaults(Config *out)
   memset(out, 0, sizeof(Config));
   out->mode = 1U;
   out->run_state = 0U;
-  for (uint8_t i = 1U; i <= 8U; i++)
+  for (uint8_t i = 1U; i <= 9U; i++)
   {
     out->param_level[i] = 4U;
   }

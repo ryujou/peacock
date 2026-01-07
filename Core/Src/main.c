@@ -94,6 +94,8 @@ static uint16_t flash_accum_ms = 0;
 static uint8_t flash_on = 0;
 static uint8_t env = 0;
 static uint16_t breath_phase = 0;
+static uint32_t breath_phase_accum = 0;
+static uint8_t breath_lut_cur = 0;
 static uint8_t save_pending = 0;
 static uint16_t save_delay_ms = 0;
 
@@ -113,11 +115,12 @@ typedef enum
 static RunState_t run_state = RUN_STATE_RUN;
 
 /* 参数档位（index by mode 1..8） */
-static uint8_t param_level[9] = {0, 4, 4, 4, 4, 4, 4, 4, 4};
+static uint8_t param_level[10] = {0, 4, 4, 4, 4, 4, 4, 4, 4, 4};
 
 static const uint16_t step_ms_table[7] = {240, 200, 160, 130, 110, 90, 70};
 static const uint16_t flash_ms_table[7] = {300, 240, 200, 160, 130, 110, 90};
-static const uint8_t bright_cmd_table[7] = {20, 36, 56, 80, 110, 160, 220};
+static const uint8_t bright_cmd_table[7] = {100, 120, 140, 170, 200, 230, 255};
+static const uint16_t breath_delta_q8_table[7] = {218, 246, 281, 328, 393, 492, 655};
 
 /* USER CODE END PV */
 
@@ -143,35 +146,17 @@ static void Save_Config_Now(void);
 
 /* LED 顺序：LED1..LED7 映射到 PA4,5,6,1,2,3,7（用于 GPIOA BSRR 原子更新） */
 static const uint16_t led_bits[LED_COUNT] = {
-  LED1_Pin, LED2_Pin, LED3_Pin, LED4_Pin, LED5_Pin, LED6_Pin, LED7_Pin
+  LED4_Pin, LED5_Pin, LED6_Pin, LED1_Pin, LED2_Pin, LED3_Pin, LED7_Pin
 };
 
-static const uint8_t breath_gamma_lut[BREATH_STEPS] = {
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-  0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-  1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3,
-  3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 6, 6,
-  6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10,
-  10, 10, 10, 11, 11, 11, 12, 12, 12, 13, 13, 13, 13, 14,
-  14, 14, 15, 15, 15, 16, 16, 17, 17, 17, 18, 18, 18, 19,
-  19, 20, 20, 20, 21, 21, 22, 22, 22, 23, 23, 24, 24, 25,
-  25, 26, 26, 26, 27, 27, 28, 28, 29, 29, 30, 30, 31, 31,
-  32, 32, 33, 33, 34, 34, 35, 36, 36, 37, 37, 38, 38, 39,
-  40, 40, 41, 41, 42, 42, 43, 44, 44, 45, 46, 46, 47, 47,
-  48, 49, 49, 50, 51, 51, 52, 53, 53, 54, 55, 55, 56, 57,
-  58, 58, 59, 60, 60, 61, 62, 63, 63, 64, 65, 66, 66, 67,
-  68, 69, 70, 70, 71, 72, 73, 74, 74, 75, 76, 77, 78, 79,
-  79, 80, 81, 82, 83, 84, 85, 85, 86, 87, 88, 89, 90, 91,
-  92, 93, 94, 95, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104,
-  105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
-  119, 121, 122, 123, 124, 125, 126, 127
-};
+/* Setup level (1..7) -> LED index mapping, aligned with led_bits order. */
+static const uint8_t setup_level_to_index[LED_COUNT] = {0, 1, 2, 3, 4, 5, 6};
 
 static uint8_t Breath_FromPhase(uint16_t phase)
 {
   uint16_t tri = (phase < BREATH_STEPS) ? phase : (uint16_t)(BREATH_CYCLE - 1U - phase);
 
-  return breath_gamma_lut[tri];
+  return (uint8_t)(((uint16_t)gamma_lut[tri] * 255U) / PWM_STEPS);
 }
 
 static void Gamma_Init(void)
@@ -210,12 +195,12 @@ static void Apply_CmdToDutyNext(const uint8_t cmd[LED_COUNT])
 static void Apply_Config(const Config *cfg)
 {
   mode = cfg->mode;
-  if ((mode < 1U) || (mode > 8U))
+  if ((mode < 1U) || (mode > 9U))
   {
     mode = 1U;
   }
   param_level[0] = 0U;
-  for (uint8_t i = 1U; i <= 8U; i++)
+  for (uint8_t i = 1U; i <= 9U; i++)
   {
     uint8_t level = cfg->param_level[i];
     if ((level < 1U) || (level > 7U))
@@ -233,7 +218,7 @@ static void Save_Config_Now(void)
   cfg.mode = mode;
   cfg.run_state = RUN_STATE_RUN;
   cfg.param_level[0] = 0U;
-  for (uint8_t i = 1U; i <= 8U; i++)
+  for (uint8_t i = 1U; i <= 9U; i++)
   {
     uint8_t level = param_level[i];
     if ((level < 1U) || (level > 7U))
@@ -303,7 +288,7 @@ static void Effect_Tick(void)
     else if (short_press)
     {
       mode++;
-      if (mode > 8U)
+      if (mode > 9U)
       {
         mode = 1U;
       }
@@ -344,20 +329,33 @@ static void Effect_Tick(void)
   {
     flash_ms = flash_ms_table[level_idx];
   }
-
-  breath_phase = (uint16_t)(breath_phase + ENV_DELTA);
-  if (breath_phase >= BREATH_CYCLE)
+  if (mode == 9U)
   {
-    breath_phase = (uint16_t)(breath_phase - BREATH_CYCLE);
+    uint32_t delta_q8 = breath_delta_q8_table[level_idx];
+    breath_phase_accum += delta_q8;
+    if (breath_phase_accum >= (uint32_t)BREATH_CYCLE << 8)
+    {
+      breath_phase_accum -= (uint32_t)BREATH_CYCLE << 8;
+    }
+    breath_phase = (uint16_t)(breath_phase_accum >> 8);
+  }
+  else
+  {
+    breath_phase = (uint16_t)(breath_phase + ENV_DELTA);
+    if (breath_phase >= BREATH_CYCLE)
+    {
+      breath_phase = (uint16_t)(breath_phase - BREATH_CYCLE);
+    }
   }
   {
     uint16_t breath = Breath_FromPhase(breath_phase);
-    uint16_t boosted = (uint16_t)((breath * 255U) / 96U);
+    uint16_t boosted = (uint16_t)((breath * 255U) / 32U);
     if (boosted > 255U)
     {
       boosted = 255U;
     }
     env = (uint8_t)boosted;
+    breath_lut_cur = (uint8_t)breath;
   }
 
   step_accum_ms += EFFECT_TICK_MS;
@@ -416,7 +414,7 @@ static void Effect_Tick(void)
     {
       level = 7U;
     }
-    cmd[level - 1U] = 255U;
+    cmd[setup_level_to_index[level - 1U]] = 255U;
     Apply_CmdToDutyNext(cmd);
     __disable_irq();
     memcpy((void *)duty_cur, (void *)duty_next, LED_COUNT);
@@ -454,49 +452,61 @@ static void Effect_Tick(void)
       break;
     case 4U:
     case 5U:
-      /* 模式4/5：呼吸流水，软亮团环绕 */
-      for (uint8_t i = 0; i < LED_COUNT; i++)
       {
-        uint8_t dist = (i > pos) ? (i - pos) : (pos - i);
-        if (dist > (LED_COUNT / 2U))
+        uint8_t env_breath = env;
+        if (env_breath < 100U)
         {
-          dist = (uint8_t)(LED_COUNT - dist);
+          env_breath = 100U;
         }
-        uint8_t base = 0U;
-        if (dist == 0U)
+        for (uint8_t i = 0; i < LED_COUNT; i++)
         {
-          base = 255U;
+          uint8_t dist = (i > pos) ? (i - pos) : (pos - i);
+          if (dist > (LED_COUNT / 2U))
+          {
+            dist = (uint8_t)(LED_COUNT - dist);
+          }
+          uint8_t base = 0U;
+          if (dist == 0U)
+          {
+            base = 255U;
+          }
+          else if (dist == 1U)
+          {
+            base = 220U;
+          }
+          else if (dist == 2U)
+          {
+            base = 128U;
+          }
+          cmd[i] = (uint8_t)(((uint16_t)base * env_breath) / 255U);
         }
-        else if (dist == 1U)
-        {
-          base = 220U;
-        }
-        else if (dist == 2U)
-        {
-          base = 128U;
-        }
-        cmd[i] = (uint8_t)(((uint16_t)base * env) / 255U);
       }
       break;
     case 6U:
-      /* 模式6：中心向外分组呼吸 */
-      switch (group)
       {
-        case 0U:
-          cmd[3] = env;
-          break;
-        case 1U:
-          cmd[2] = env;
-          cmd[4] = env;
-          break;
-        case 2U:
-          cmd[1] = env;
-          cmd[5] = env;
-          break;
-        default:
-          cmd[0] = env;
-          cmd[6] = env;
-          break;
+        uint8_t env_breath = env;
+        if (env_breath < 100U)
+        {
+          env_breath = 100U;
+        }
+        switch (group)
+        {
+          case 0U:
+            cmd[3] = env_breath;
+            break;
+          case 1U:
+            cmd[2] = env_breath;
+            cmd[4] = env_breath;
+            break;
+          case 2U:
+            cmd[1] = env_breath;
+            cmd[5] = env_breath;
+            break;
+          default:
+            cmd[0] = env_breath;
+            cmd[6] = env_breath;
+            break;
+        }
       }
       break;
     case 7U:
@@ -506,6 +516,15 @@ static void Effect_Tick(void)
         for (uint8_t i = 0; i < LED_COUNT; i++)
         {
           cmd[i] = 255U;
+        }
+      }
+      break;
+    case 9U:
+      {
+        uint8_t env_breath = breath_lut_cur;
+        for (uint8_t i = 0; i < LED_COUNT; i++)
+        {
+          cmd[i] = env_breath;
         }
       }
       break;

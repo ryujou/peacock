@@ -16,7 +16,7 @@ typedef struct
 {
   uint8_t mode;
   uint8_t run_state;
-  uint8_t param_level[9];
+  uint8_t param_level[10];
   uint8_t reserved[21];
 } Config;
 
