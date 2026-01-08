@@ -16,7 +16,8 @@
 
 > STM32G0 (STM32G030xx) MCU 项目，基于 STM32CubeMX 生成，使用 CMake 构建。
 
-使用 VSCode 的 STM32CubeIDE 插件开发环境，参考文档：[如何使用VScode开发STM32【喂饭级教程】-全过程讲解]<https://blog.csdn.net/liu_yu_143482/article/details/155913195>
+<p align="center">使用 VSCode 的 STM32CubeIDE 插件开发环境，参考文档：  <a href="https://blog.csdn.net/liu_yu_143482/article/details/155913195">如何使用VScode开发STM32【喂饭级教程】-全过程讲解</a></p>
+
 
 ## 目录
 
@@ -49,15 +50,15 @@
   <summary>模式动图（点击展开）</summary>
   <br>
   <div align="center">
-    <img src="assets/1.gif" alt="模式 1 动图" width="480">
-    <img src="assets/2.gif" alt="模式 2 动图" width="480">
-    <img src="assets/3.gif" alt="模式 3 动图" width="480">
-    <img src="assets/4.gif" alt="模式 4 动图" width="480">
-    <img src="assets/5.gif" alt="模式 5 动图" width="480">
-    <img src="assets/6.gif" alt="模式 6 动图" width="480">
-    <img src="assets/7.gif" alt="模式 7 动图" width="480">
-    <img src="assets/8.gif" alt="模式 8 动图" width="480">
-    <img src="assets/9.gif" alt="模式 9 动图" width="480">
+    <img src="assets/mode1.gif" alt="模式 1 动图" width="480">
+    <img src="assets/mode2.gif" alt="模式 2 动图" width="480">
+    <img src="assets/mode3.gif" alt="模式 3 动图" width="480">
+    <img src="assets/mode4.gif" alt="模式 4 动图" width="480">
+    <img src="assets/mode5.gif" alt="模式 5 动图" width="480">
+    <img src="assets/mode6.gif" alt="模式 6 动图" width="480">
+    <img src="assets/mode7.gif" alt="模式 7 动图" width="480">
+    <img src="assets/mode8.gif" alt="模式 8 动图" width="480">
+    <img src="assets/mode9.gif" alt="模式 9 动图" width="480">
   </div>
 </details>
 
