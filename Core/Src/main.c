@@ -43,7 +43,17 @@
 
 /* 灯数量与软件 PWM 参数 */
 #define LED_COUNT 7U
-#define PWM_STEPS 128U
+#define PWM_BITS 6U
+#define PWM_STEPS (1U << PWM_BITS)
+#define PWM_MAX (PWM_STEPS - 1U)
+#define DITHER_BITS (8U - PWM_BITS)
+#define DITHER_CYCLE (1U << DITHER_BITS)
+#define BAM_FRAME_UNITS ((1U << PWM_BITS) - 1U)
+/* 64MHz / (20kHz * 63) ≈ 50.8 -> 51 ticks per BAM base unit. */
+#define BAM_BASE_TICKS 51U
+#if (PWM_STEPS != (1U << PWM_BITS))
+#error "PWM_STEPS must be a power-of-two defined by PWM_BITS."
+#endif
 /* 低频效果节拍 */
 #define EFFECT_TICK_MS 10U
 /* 流水步进周期 */
@@ -78,9 +88,15 @@ TIM_HandleTypeDef htim14;
 /* USER CODE BEGIN PV */
 
 /* PWM 相位与双缓冲占空比 */
-static volatile uint8_t pwm_phase = 0;
-static volatile uint8_t duty_cur[LED_COUNT];
+static volatile uint8_t bam_bit = 0;
+static volatile uint8_t dither_phase = 0;
 static volatile uint8_t duty_next[LED_COUNT];
+static uint32_t bam_on_buf_a[DITHER_CYCLE][PWM_BITS];
+static uint32_t bam_on_buf_b[DITHER_CYCLE][PWM_BITS];
+static uint32_t (*bam_on_cur)[PWM_BITS] = bam_on_buf_a;
+static uint32_t (*bam_on_next)[PWM_BITS] = bam_on_buf_b;
+static volatile uint8_t bam_table_ready = 0;
+static uint16_t bam_arr_table[PWM_BITS];
 
 /* 伽马校正查找表 */
 static uint8_t gamma_lut[256];
@@ -144,7 +160,7 @@ static void Save_Config_Now(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* LED 顺序：LED1..LED7 映射到 PA4,5,6,1,2,3,7（用于 GPIOA BSRR 原子更新） */
+/* LED 顺序：LED1..LED7 映射到 PA4,5,6,1,2,3,7（用于 GPIOA BSRR 原子更新）*/
 static const uint16_t led_bits[LED_COUNT] = {
   LED4_Pin, LED5_Pin, LED6_Pin, LED1_Pin, LED2_Pin, LED3_Pin, LED7_Pin
 };
@@ -156,22 +172,30 @@ static uint8_t Breath_FromPhase(uint16_t phase)
 {
   uint16_t tri = (phase < BREATH_STEPS) ? phase : (uint16_t)(BREATH_CYCLE - 1U - phase);
 
-  return (uint8_t)(((uint16_t)gamma_lut[tri] * 255U) / PWM_STEPS);
+  return gamma_lut[tri];
+}
+
+static uint8_t Breath_Triangle(uint16_t phase)
+{
+  /* Linear triangle wave (0..255) with gamma correction. */
+  uint16_t tri = (phase < BREATH_STEPS) ? phase : (uint16_t)(BREATH_CYCLE - 1U - phase);
+
+  return gamma_lut[tri];
 }
 
 static void Gamma_Init(void)
 {
-  /* 用户代码函数：初始化伽马校正查找表（只在启动执行一次） */
+  /* 用户代码函数：初始化伽马校正查找表（仅启动执行一次） */
   /* 启动时一次性生成伽马表，避免 ISR 内浮点运算 */
   const float gamma = 2.2f;
   for (uint16_t i = 0; i < 256; i++)
   {
     float x = (float)i / 255.0f;
     float y = powf(x, gamma);
-    uint32_t duty = (uint32_t)(y * (float)PWM_STEPS + 0.5f);
-    if (duty > PWM_STEPS)
+    uint32_t duty = (uint32_t)(y * 255.0f + 0.5f);
+    if (duty > 255U)
     {
-      duty = PWM_STEPS;
+      duty = 255U;
     }
     gamma_lut[i] = (uint8_t)duty;
   }
@@ -179,16 +203,57 @@ static void Gamma_Init(void)
 
 static void Apply_CmdToDutyNext(const uint8_t cmd[LED_COUNT])
 {
-  /* 用户代码函数：将线性亮度命令写入下一帧 duty（带伽马校正） */
-  /* 线性亮度 -> 伽马校正 -> duty_next（临界区保护） */
-  uint8_t tmp[LED_COUNT];
+  /* Map cmd->gamma and precompute the dithered phase table. */
+  __disable_irq();
+  if (bam_table_ready != 0U)
+  {
+    __enable_irq();
+    return;
+  }
+  __enable_irq();
+
   for (uint8_t i = 0; i < LED_COUNT; i++)
   {
-    tmp[i] = gamma_lut[cmd[i]];
+    duty_next[i] = gamma_lut[cmd[i]];
   }
+
+  for (uint8_t d = 0; d < DITHER_CYCLE; d++)
+  {
+    for (uint8_t b = 0; b < PWM_BITS; b++)
+    {
+      bam_on_next[d][b] = 0U;
+    }
+  }
+
+  for (uint8_t i = 0; i < LED_COUNT; i++)
+  {
+    /* 4-frame temporal dither to approximate 8-bit gamma with 6-bit BAM. */
+    uint32_t scaled = ((uint32_t)duty_next[i] * (PWM_MAX * DITHER_CYCLE) + 127U) / 255U;
+    uint8_t base = (uint8_t)(scaled >> DITHER_BITS);
+    uint8_t frac = (uint8_t)(scaled & (DITHER_CYCLE - 1U));
+    for (uint8_t d = 0; d < DITHER_CYCLE; d++)
+    {
+      uint8_t value = base;
+      if ((base < PWM_MAX) && (d < frac))
+      {
+        value = (uint8_t)(base + 1U);
+      }
+      if (value > PWM_MAX)
+      {
+        value = PWM_MAX;
+      }
+      for (uint8_t b = 0; b < PWM_BITS; b++)
+      {
+        if ((value >> b) & 0x1U)
+        {
+          bam_on_next[d][b] |= led_bits[i];
+        }
+      }
+    }
+  }
+
   __disable_irq();
-  /* 仅在主循环写入下一帧，占空比切换在 PWM 边界完成 */
-  memcpy((void *)duty_next, tmp, LED_COUNT);
+  bam_table_ready = 1U;
   __enable_irq();
 }
 
@@ -355,7 +420,14 @@ static void Effect_Tick(void)
       boosted = 255U;
     }
     env = (uint8_t)boosted;
-    breath_lut_cur = (uint8_t)breath;
+    if (mode == 9U)
+    {
+      breath_lut_cur = Breath_Triangle(breath_phase);
+    }
+    else
+    {
+      breath_lut_cur = (uint8_t)breath;
+    }
   }
 
   step_accum_ms += EFFECT_TICK_MS;
@@ -416,9 +488,6 @@ static void Effect_Tick(void)
     }
     cmd[setup_level_to_index[level - 1U]] = 255U;
     Apply_CmdToDutyNext(cmd);
-    __disable_irq();
-    memcpy((void *)duty_cur, (void *)duty_next, LED_COUNT);
-    __enable_irq();
     return;
   }
 
@@ -520,6 +589,7 @@ static void Effect_Tick(void)
       }
       break;
     case 9U:
+      /* Mode 9: triangle breathing for all LEDs. */
       {
         uint8_t env_breath = breath_lut_cur;
         for (uint8_t i = 0; i < LED_COUNT; i++)
@@ -599,10 +669,26 @@ int main(void)
   /* 初始化伽马表并生成首帧 duty */
   Gamma_Init();
   Effect_Tick();
-  __disable_irq();
-  memcpy((void *)duty_cur, (void *)duty_next, LED_COUNT);
-  __enable_irq();
-  /* 启动 TIM14 中断，开始软件 PWM 扫描 */
+  for (uint8_t b = 0; b < PWM_BITS; b++)
+  {
+    bam_arr_table[b] = (uint16_t)((BAM_BASE_TICKS * (1U << b)) - 1U);
+  }
+  bam_bit = 0U;
+  dither_phase = 0U;
+  if (bam_table_ready != 0U)
+  {
+    uint32_t (*tmp)[PWM_BITS] = bam_on_cur;
+    bam_on_cur = bam_on_next;
+    bam_on_next = tmp;
+    bam_table_ready = 0U;
+  }
+  {
+    uint32_t on_bits = bam_on_cur[dither_phase][bam_bit];
+    uint32_t off_bits = LED_MASK & ~on_bits;
+    GPIOA->BSRR = (on_bits & LED_MASK) | (off_bits << 16);
+  }
+  __HAL_TIM_SET_AUTORELOAD(&htim14, bam_arr_table[bam_bit]);
+  /* Start TIM14 interrupt for BAM PWM. */
   HAL_TIM_Base_Start_IT(&htim14);
 
   /* USER CODE END 2 */
@@ -684,12 +770,17 @@ static void MX_TIM14_Init(void)
   /* USER CODE END TIM14_Init 0 */
 
   /* USER CODE BEGIN TIM14_Init 1 */
+  /*
+   * TIM14 BAM timing:
+   * base_ticks = 64MHz / (20kHz * 63) ≈ 50.8 -> BAM_BASE_TICKS = 51
+   * frame_ticks = base_ticks * 63 = 3213 -> PWM base ≈ 19.94kHz
+   */
 
   /* USER CODE END TIM14_Init 1 */
   htim14.Instance = TIM14;
-  htim14.Init.Prescaler = 63;
+  htim14.Init.Prescaler = 0;
   htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim14.Init.Period = 25;
+  htim14.Init.Period = (BAM_BASE_TICKS - 1U);
   htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim14.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim14) != HAL_OK)
@@ -737,6 +828,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* Note: for cleaner 20kHz edges, consider GPIO_SPEED_FREQ_MEDIUM if rise time looks soft. */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
@@ -745,29 +837,34 @@ static void MX_GPIO_Init(void)
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  /* 用户代码函数：定时器中断回调，仅做 PWM 相位与 BSRR 更新 */
+  /* Timer ISR: update BAM output for current bit. */
   if (htim->Instance == TIM14)
   {
-    /* TIM14 更新约 38.46 kHz；PWM 频率 = 更新频率 / PWM_STEPS */
-    pwm_phase++;
-    if (pwm_phase >= PWM_STEPS)
-    {
-      pwm_phase = 0;
-      /* 在 PWM 周期边界切换占空比，避免撕裂闪烁 */
-      memcpy((void *)duty_cur, (void *)duty_next, LED_COUNT);
-    }
+    /* BAM: 6-bit per frame @ 20kHz, update rate ~120kHz. */
+    uint32_t on_bits = bam_on_cur[dither_phase][bam_bit];
+    uint32_t off_bits = LED_MASK & ~on_bits;
+    /* Single BSRR write for atomic LED update. */
+    GPIOA->BSRR = (on_bits & LED_MASK) | (off_bits << 16);
 
-    uint32_t on_bits = 0;
-    for (uint8_t i = 0; i < LED_COUNT; i++)
+    bam_bit++;
+    if (bam_bit >= PWM_BITS)
     {
-      if (pwm_phase < duty_cur[i])
+      bam_bit = 0;
+      dither_phase++;
+      if (dither_phase >= DITHER_CYCLE)
       {
-        on_bits |= led_bits[i];
+        dither_phase = 0;
+      }
+      if (bam_table_ready != 0U)
+      {
+        uint32_t (*tmp)[PWM_BITS] = bam_on_cur;
+        bam_on_cur = bam_on_next;
+        bam_on_next = tmp;
+        bam_table_ready = 0U;
+        dither_phase = 0U;
       }
     }
-    uint32_t off_bits = LED_MASK & ~on_bits;
-    /* 一次写 BSRR 同时置位/复位，仅影响 LED 引脚 */
-    GPIOA->BSRR = (on_bits & LED_MASK) | (off_bits << 16);
+    __HAL_TIM_SET_AUTORELOAD(htim, bam_arr_table[bam_bit]);
   }
 }
 

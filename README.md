@@ -12,73 +12,52 @@
   <img src="https://img.shields.io/badge/Status-Active-1EAE98?style=flat-square" alt="status">
 </p>
 
-<p align="center">小孔雀 V4.0，恩师  <a href="https://space.bilibili.com/3546647883680530">ずっと徹夜中でいい</a></p>
+<p align="center">小孔雀 V4.0，恩师 <a href="https://space.bilibili.com/3546647883680530">ずっと徹夜中でいい</a></p>
 
-> STM32G0 (STM32G030xx) MCU 项目，基于 STM32CubeMX 生成，使用 CMake 构建。
-
-<p align="center">使用 VSCode 的 STM32CubeIDE 插件开发环境，参考文档：  <a href="https://blog.csdn.net/liu_yu_143482/article/details/155913195">如何使用VScode开发STM32【喂饭级教程】-全过程讲解</a></p>
-
+> STM32G030xx 项目，基于 STM32CubeMX 生成，使用 CMake 构建，7 路 LED 高速调光。
 
 ## 目录
 
-- [项目亮点](#项目亮点)
-- [演示与实物](#演示与实物)
+- [项目简介](#项目简介)
 - [功能列表](#功能列表)
+- [高频调光说明](#高频调光说明)
 - [环境与依赖](#环境与依赖)
 - [快速开始](#快速开始)
-- [模式与参数说明](#模式与参数说明)
-- [构建模式说明](#构建模式说明)
+- [模式与参数](#模式与参数)
 - [目录结构](#目录结构)
 - [重新生成 CubeMX 代码](#重新生成-cubemx-代码)
 - [常见问题](#常见问题)
 
-## 项目亮点
+## 项目简介
 
-- C11 + ASM，目标 Cortex-M0+
-- 预置 Debug/Release 构建方案
-- HAL/CMSIS 驱动完整集成
-- 适配 `arm-none-eabi` 工具链
-- 软 PWM + 双缓冲，灯效平滑、无可见闪烁
-
-## 演示与实物
-
-<div align="center">
-  <img src="assets/peacock.jpg" alt="实物照片" width="520">
-</div>
-
-<details>
-  <summary>模式动图（点击展开）</summary>
-  <br>
-  <div align="center">
-    <img src="assets/mode1.gif" alt="模式 1 动图" width="480">
-    <img src="assets/mode2.gif" alt="模式 2 动图" width="480">
-    <img src="assets/mode3.gif" alt="模式 3 动图" width="480">
-    <img src="assets/mode4.gif" alt="模式 4 动图" width="480">
-    <img src="assets/mode5.gif" alt="模式 5 动图" width="480">
-    <img src="assets/mode6.gif" alt="模式 6 动图" width="480">
-    <img src="assets/mode7.gif" alt="模式 7 动图" width="480">
-    <img src="assets/mode8.gif" alt="模式 8 动图" width="480">
-    <img src="assets/mode9.gif" alt="模式 9 动图" width="480">
-  </div>
-</details>
+Peacock 是基于 STM32G030 的 7 路 LED 灯效控制工程，支持多模式灯效、按键交互与参数保存。工程采用高频调光方案降低可见闪烁与相机滚动条纹。
 
 ## 功能列表
 
-- 7 路 LED 软件 PWM（定时器中断扫描，BSRR 一次写入）
+- 7 路 LED 软件调光，GPIOA BSRR 原子更新
 - 9 种灯效（流动/呼吸/爆闪/常亮/全灯呼吸）
-- 伽马校正与双缓冲占空比切换，降低闪烁
-- 按键消抖、短按切换模式、长按进入/退出设置
-- 参数档位调节并显示档位
-- 配置持久化（Flash 保存）
+- 伽马校正 + 双缓冲帧切换，避免撕裂
+- 按键消抖，短按切换模式，长按进入设置
+- 参数档位调节与 Flash 持久化
+
+## 高频调光说明
+
+- **目标 PWM 基频**：20 kHz（每路 LED 的调光周期）
+- **调光实现**：BAM（Bit Angle Modulation）+ 相位表预计算
+- **中断更新率**：约 120 kHz（6 bit 位平面，帧内按位更新）
+- **抖动处理**：跨帧误差分配，将 8-bit 亮度映射到 6-bit BAM
+- **帧边界切换**：仅在帧边界交换双缓冲相位表，避免中途变化导致闪烁
+
+提示：若 LED 边沿过缓，可在 `MX_GPIO_Init` 中将 GPIO_SPEED 调高到 MEDIUM。
 
 ## 环境与依赖
 
 | 组件 | 说明 | 备注 |
 | --- | --- | --- |
-| CMake | 3.22+ | 用于配置生成 |
+| CMake | 3.22+ | 配置生成 |
 | Ninja | 构建器 | 推荐 |
 | ARM GNU Toolchain | `arm-none-eabi-gcc` | 需在 PATH 中 |
-| STM32CubeMX | 可选 | 用于重新生成代码 |
+| STM32CubeMX | 可选 | 重新生成代码 |
 
 ## 快速开始
 
@@ -102,27 +81,12 @@ cmake --build --preset Release
 cmake --build --preset Debug --target clean
 ```
 
-### 4. 生成编译数据库
+### 4. 构建产物
 
-工程默认导出 `compile_commands.json`，位于 `build/<PresetName>/`，可用于 clangd 或静态分析工具。
+- `build/Debug/peacock.elf`
+- `build/Debug/peacock.map`
 
-### 5. 构建产物
-
-- `build/Debug/peacock.elf`：可执行映像
-- `build/Debug/peacock.map`：链接映射文件
-
-> 如果提示找不到 `arm-none-eabi-gcc`，请检查环境变量 PATH。
-
-### 6. 运行与按键交互
-
-按键为低电平有效（上拉输入），用于切换模式与调节参数。
-- 短按：切换灯效模式
-- 长按：进入/退出设置模式
-- 设置模式下短按：切换当前模式的参数档位
-
-## 模式与参数说明
-
-### 模式列表
+## 模式与参数
 
 | 模式 | 灯效描述 | 参数含义 |
 | --- | --- | --- |
@@ -157,9 +121,14 @@ cmake --build --preset Debug --target clean
 - 模式 9 使用“呼吸速度”
 - 呼吸周期为全灯由暗到亮再到暗的一次完整周期，表中为近似值
 
+按键为低电平有效（上拉输入）：
+- 短按：切换灯效模式
+- 长按：进入/退出设置模式
+- 设置模式下短按：切换当前模式的参数档位
+
 ### 设置模式与参数保存
 
-进入设置模式后，当前档位会以单灯高亮方式提示（第 1~7 颗灯对应档位 1~7）。
+进入设置模式后，当前档位会以单灯高亮方式提示（第 1到7 颗灯对应档位 1到7）。
 退出设置模式后，参数会延迟写入 Flash，避免频繁擦写。
 
 ## 构建模式说明
@@ -194,7 +163,7 @@ peacock/
 
 ## 常见问题
 
-**Q: 为什么编译失败提示找不到工具链？**  
+**Q: 编译失败提示找不到工具链？**  
 A: 确保已安装 ARM GNU Toolchain，并把 `arm-none-eabi-gcc` 加入 PATH。
 
 **Q: 重新生成后 CMake 出错怎么办？**  
